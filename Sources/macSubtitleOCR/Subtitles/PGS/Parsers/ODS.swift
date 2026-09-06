@@ -45,7 +45,7 @@ struct ODS {
 
     // Parses the Object Definition Segment (ODS) to extract the subtitle image bitmap.
     // ODS structure (simplified):
-    //   0x17: Segment Type; already checked by the caller
+    //   0x15: Segment Type; already checked by the caller
     //   2 bytes: Object ID (unused by us)
     //   1 byte: Version number (unused by us)
     //   1 byte: Sequence flag (0x80: First in sequence, 0x40: Last in sequence,

@@ -83,3 +83,32 @@ private func compareOutputs(with outputPath: String, track: Int) throws {
     // Guard against the parser passing this test by rejecting everything.
     #expect(parsedAnySubtitles)
 }
+
+/// Builds a PGS segment: 2 byte magic, 4 byte PTS, 4 byte DTS, 1 byte type, 2 byte payload length.
+private func pgsSegment(type: UInt8, payload: [UInt8]) -> [UInt8] {
+    var segment: [UInt8] = Array("PG".utf8) + [0, 0, 0, 0] + [0, 0, 0, 0] + [type]
+    segment += [UInt8(payload.count >> 8), UInt8(payload.count & 0xFF)]
+    return segment + payload
+}
+
+/// An object claiming to be larger than the video it is composited onto must be rejected, because
+/// decoding it would reserve a buffer of `objectWidth * objectHeight`.
+@Test func oversizedObjectIsRejected() throws {
+    // Presentation composition segment declaring a 1920x1080 video.
+    let presentation = pgsSegment(type: 0x16, payload: [0x07, 0x80, 0x04, 0x38] + [UInt8](repeating: 0, count: 7))
+    // Palette definition segment holding a single entry, so a subtitle can be assembled.
+    let palette = pgsSegment(type: 0x14, payload: [0x00, 0x00] + [0x00, 0x80, 0x80, 0x80, 0xFF])
+    // Object definition segment, first and last in its sequence, claiming the largest dimensions the
+    // 16 bit width and height fields allow.
+    let object = pgsSegment(type: 0x15, payload: [0x00, 0x00, 0x00, 0xC0] + [0x00, 0x00, 0x04] +
+        [0xFF, 0xFF, 0xFF, 0xFF] + [0x00, 0x00])
+
+    let stream = Data(presentation + palette + object + pgsSegment(type: 0x80, payload: []))
+
+    do {
+        _ = try stream.withUnsafeBytes { try PGS($0) }
+        Issue.record("Expected the oversized object to be rejected")
+    } catch macSubtitleOCRError.invalidODSDimensions {
+        // Expected: rejected on its dimensions, before anything is decoded for it.
+    }
+}

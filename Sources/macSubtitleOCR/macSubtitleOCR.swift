@@ -42,7 +42,8 @@ struct macSubtitleOCR: AsyncParsableCommand {
             let results = try await processInput()
             try await saveResults(fileHandler: fileHandler, results: results)
         } catch let macSubtitleOCRError.fileReadError(string), let macSubtitleOCRError.invalidInputFile(string),
-                let macSubtitleOCRError.ffmpegError(string), let macSubtitleOCRError.invalidRLE(string) {
+                let macSubtitleOCRError.ffmpegError(string), let macSubtitleOCRError.invalidRLE(string),
+                let macSubtitleOCRError.invalidODSDimensions(string) {
             print("Error: \(string), exiting...", to: &stderr)
         } catch {
             print("Error: \(error.localizedDescription), exiting...", to: &stderr)
