@@ -15,10 +15,16 @@ four colors with a coarse alpha per color, PGS a full 256 color palette with 8 b
 
 Each frame is a row of unrelated words in random order, assembled from individual word bitmaps that
 were segmented out of many different subtitles and recombined. Nothing in a frame is a phrase anyone
-wrote: the words are ordinary lowercase vocabulary, filtered to exclude capitalized words, so no name,
-speaker label or line of dialogue survives into the fixture.
+wrote: the vocabulary is ordinary lowercase words, plus a few common upper case ones, filtered so that
+no name, speaker label or line of dialogue survives into the fixture.
+
+Two frames cover glyphs that OCR is known to get wrong. One wraps its words in square brackets, which
+recognition turns into a letter when strokes thicken, and two place a standalone I among lowercase
+words, which is otherwise read as a slash. Both read correctly today. Note that VobSub glyphs touch
+their neighbours, leaving no gap to cut on, so its parentheses cannot be separated from the caption
+they belong to and only the PGS brackets appear here.
 
 Real glyphs are used rather than freshly rendered ones because rendered text does not reproduce the
-failure. Text drawn with Core Text has generous enough counters that flattening the anti-aliasing
+failures this guards against. Text drawn with Core Text has generous enough counters that flattening the anti-aliasing
 leaves it readable, and a fixture built that way failed on at most two frames of eight instead of six
 of six. The same is true of the Sintel files, where flattening changes one frame in twenty six.
