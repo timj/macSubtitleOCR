@@ -179,3 +179,17 @@ private struct OCRSamples: Decodable {
         #expect(score >= 90.0, "\(sample.source): expected \(sample.text), read \(actual) (\(score)%)")
     }
 }
+
+/// Characters drawn as Latin ones are repaired; characters that merely belong to another script are not.
+@Test func latinConfusablesAreNormalized() {
+    // Cyrillic а and Greek Α are indistinguishable from their Latin counterparts.
+    #expect(LatinConfusables.normalize("Eurek\u{0430}") == "Eureka")
+    #expect(LatinConfusables.normalize("\u{0391}I") == "AI")
+
+    // Cyrillic Ч and т look nothing like a Latin letter, so guessing at them is not this function's job.
+    #expect(LatinConfusables.normalize("\u{0427}\u{0442}\u{0442}") == "\u{0427}\u{0442}\u{0442}")
+
+    // Text already in the Latin script is returned untouched, accents and all.
+    #expect(LatinConfusables.normalize("Eureka") == "Eureka")
+    #expect(LatinConfusables.normalize("café") == "café")
+}

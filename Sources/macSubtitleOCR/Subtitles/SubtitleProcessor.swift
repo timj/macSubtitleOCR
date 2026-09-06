@@ -122,6 +122,26 @@ struct SubtitleProcessor {
         await accumulator.append(taskInput.makeSubtitle(text: correctedText), jsonOut)
     }
 
+    /// Vision's recognizer draws on a multilingual character inventory whatever `recognitionLanguages`
+    /// asks for, so an English only track comes back with the odd Cyrillic or Greek letter. A lower
+    /// ranked candidate is usually the same words spelled in the expected script, so ask for a few.
+    private var candidatesToConsider: Int { expectsLatinScript ? 5 : 1 }
+
+    /// Chooses the candidate to keep, along with the text to record for it.
+    ///
+    /// If the best candidate is wrong only in being spelled with characters drawn as Latin ones, it is
+    /// repaired in place; the reading was right and the alternatives are worse. If a foreign letter
+    /// survives that, the glyph was genuinely misread rather than substituted, and the ranking among
+    /// candidates already in the right script is more trustworthy than repairing a worse one.
+    private func bestCandidate<T>(among candidates: [(T, String)]) -> (T, String)? {
+        guard expectsLatinScript, let top = candidates.first else { return candidates.first }
+        let repaired = LatinConfusables.normalize(top.1)
+        if !containsForeignLetters(repaired) {
+            return (top.0, repaired)
+        }
+        return candidates.first { !containsForeignLetters($0.1) } ?? top
+    }
+
     private func shouldSkip(_ taskInput: OCRSubtitleTaskInput) -> Bool {
         guard let imageSource = taskInput.imageSource else {
             return true
@@ -173,6 +193,29 @@ struct SubtitleProcessor {
         }
     }
 
+    /// True when every requested language is written in the Latin script.
+    private var expectsLatinScript: Bool {
+        language.split(separator: ",").allSatisfy { code in
+            Locale.Language(identifier: String(code)).script == Locale.Script.latin
+        }
+    }
+
+    /// True if `string` holds a letter no Latin script language is written with.
+    ///
+    /// Latin here means the blocks a Latin script language actually draws on: ASCII letters, the
+    /// Latin-1 Supplement through Latin Extended-B, and Latin Extended Additional.
+    private func containsForeignLetters(_ string: String) -> Bool {
+        string.unicodeScalars.contains { scalar in
+            guard scalar.properties.isAlphabetic else { return false }
+            switch scalar.value {
+            case 0x41 ... 0x5A, 0x61 ... 0x7A, 0xC0 ... 0x24F, 0x1E00 ... 0x1EFF:
+                return false
+            default:
+                return true
+            }
+        }
+    }
+
     @available(macOS 15.0, *)
     private func createRecognizeTextRequest() -> RecognizeTextRequest {
         var request = RecognizeTextRequest()
@@ -189,9 +232,9 @@ struct SubtitleProcessor {
     private func processRecognizedText(_ result: [RecognizedTextObservation]?, _ text: inout String,
                                        _ lines: inout [SubtitleLine], _ size: CGSize) {
         text = result?.compactMap { observation in
-            guard let candidate = observation.topCandidates(1).first else { return "" }
-
-            let string = candidate.string
+            let candidates = observation.topCandidates(candidatesToConsider)
+            guard let (candidate, string) = bestCandidate(among: candidates.map { ($0, $0.string) })
+            else { return "" }
             let confidence = candidate.confidence
             let stringRange = string.startIndex ..< string.endIndex
             let boundingBox = candidate.boundingBox(for: stringRange)?.boundingBox
@@ -212,9 +255,9 @@ struct SubtitleProcessor {
     private func processRecognizedText(_ observations: [VNRecognizedTextObservation]?, _ text: inout String,
                                        _ lines: inout [SubtitleLine], _ width: Int, _ height: Int) {
         text = observations?.compactMap { observation in
-            guard let candidate = observation.topCandidates(1).first else { return "" }
-
-            let string = candidate.string
+            let candidates = observation.topCandidates(candidatesToConsider)
+            guard let (candidate, string) = bestCandidate(among: candidates.map { ($0, $0.string) })
+            else { return "" }
             let confidence = candidate.confidence
             let stringRange = string.startIndex ..< string.endIndex
             let boundingBox = try? candidate.boundingBox(for: stringRange)?.boundingBox
