@@ -133,15 +133,19 @@ struct SubtitleImageSource {
                     maxX = max(maxX, x)
                     minY = min(minY, y)
                     maxY = max(maxY, y)
-                    let foreground: UInt8 = invert ? 255 : 0
-                    rgbaData[pixelIndex] = foreground
-                    rgbaData[pixelIndex + 1] = foreground
-                    rgbaData[pixelIndex + 2] = foreground
+                    // Invert rather than flatten to a single color: subtitle glyphs are anti-aliased
+                    // and usually carry an outline, and forcing every visible pixel to one value fattens
+                    // the strokes until counters close up and OCR misreads them.
+                    if !invert {
+                        rgbaData[pixelIndex] = 255 - rgbaData[pixelIndex]
+                        rgbaData[pixelIndex + 1] = 255 - rgbaData[pixelIndex + 1]
+                        rgbaData[pixelIndex + 2] = 255 - rgbaData[pixelIndex + 2]
+                    }
                 } else {
-                    let background: UInt8 = invert ? 0 : 255
-                    rgbaData[pixelIndex] = background
-                    rgbaData[pixelIndex + 1] = background
-                    rgbaData[pixelIndex + 2] = background
+                    // Transparent pixels become opaque white so the glyphs sit on a plain background.
+                    rgbaData[pixelIndex] = 255
+                    rgbaData[pixelIndex + 1] = 255
+                    rgbaData[pixelIndex + 2] = 255
                     rgbaData[pixelIndex + 3] = 255
                 }
             }
