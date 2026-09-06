@@ -11,6 +11,8 @@ import Foundation
 import UniformTypeIdentifiers
 import Vision
 
+private typealias TextRecognizer = @Sendable (CGImage) async -> (String, [SubtitleLine])
+
 private struct OCRSubtitleTaskInput {
     let index: Int
     let startTimestamp: TimeInterval?
@@ -62,59 +64,62 @@ struct SubtitleProcessor {
 
     func process() async throws -> macSubtitleOCRResult {
         let accumulator = SubtitleAccumulator()
-        let taskSemaphore = AsyncSemaphore(limit: maxConcurrentTasks)
-        let textRecognitionSemaphore = AsyncSemaphore(limit: maxConcurrentTasks)
         let taskInputs = subtitles.map(OCRSubtitleTaskInput.init)
+        let recognizer = makeTextRecognizer()
 
-        try await withThrowingDiscardingTaskGroup { group in
-            for taskInput in taskInputs {
-                group.addTask {
-                    await taskSemaphore.wait()
-                    defer { Task { await taskSemaphore.signal() } }
+        // Keep at most `maxConcurrentTasks` subtitles in flight by refilling the group as tasks finish.
+        // Adding every subtitle up front and gating on a semaphore leaves the surplus tasks spinning on
+        // the cooperative thread pool, which starves the continuations Vision needs to complete a request.
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            var pending = taskInputs.makeIterator()
 
-                    let subIndex = taskInput.index
+            for _ in 0 ..< maxConcurrentTasks {
+                guard let taskInput = pending.next() else { break }
+                group.addTask { await recognize(taskInput, into: accumulator, using: recognizer) }
+            }
 
-                    guard !shouldSkip(taskInput), let imageSource = taskInput.imageSource,
-                          let subImage = imageSource.createImage(invert) else {
-                        print(
-                            "Found invalid image for track: \(trackNumber), index: \(subIndex), creating an empty placeholder!")
-                        await accumulator.append(taskInput.makeSubtitle(text: ""),
-                                                 SubtitleJSONResult(index: subIndex, lines: [], text: ""))
-                        return
-                    }
-
-                    // Save subtitle image as PNG if requested
-                    if saveImages {
-                        do {
-                            try saveImage(subImage, index: subIndex)
-                        } catch {
-                            print(
-                                "Error saving image \(trackNumber)-\(subIndex): \(error.localizedDescription)",
-                                to: &stderr)
-                        }
-                    }
-
-                    let (subtitleText, subtitleLines) = await recognizeText(from: subImage,
-                                                                            textRecognitionSemaphore: textRecognitionSemaphore)
-                    let correctedText: String
-                    if language.contains("en"), !disableICorrection {
-                        let pattern = #"\bl\b"# // Replace l with I when it's a single character
-                        correctedText = subtitleText.replacingOccurrences(
-                            of: pattern,
-                            with: "I",
-                            options: .regularExpression)
-                    } else {
-                        correctedText = subtitleText
-                    }
-
-                    let jsonOut = SubtitleJSONResult(index: subIndex, lines: subtitleLines, text: correctedText)
-
-                    await accumulator.append(taskInput.makeSubtitle(text: correctedText), jsonOut)
-                }
+            while try await group.next() != nil {
+                guard let taskInput = pending.next() else { continue }
+                group.addTask { await recognize(taskInput, into: accumulator, using: recognizer) }
             }
         }
 
         return await macSubtitleOCRResult(trackNumber: trackNumber, srt: accumulator.subtitles, json: accumulator.json)
+    }
+
+    private func recognize(_ taskInput: OCRSubtitleTaskInput, into accumulator: SubtitleAccumulator,
+                           using recognizer: TextRecognizer) async {
+        let subIndex = taskInput.index
+
+        guard !shouldSkip(taskInput), let imageSource = taskInput.imageSource,
+              let subImage = imageSource.createImage(invert) else {
+            print("Found invalid image for track: \(trackNumber), index: \(subIndex), creating an empty placeholder!")
+            await accumulator.append(taskInput.makeSubtitle(text: ""),
+                                     SubtitleJSONResult(index: subIndex, lines: [], text: ""))
+            return
+        }
+
+        // Save subtitle image as PNG if requested
+        if saveImages {
+            do {
+                try saveImage(subImage, index: subIndex)
+            } catch {
+                print("Error saving image \(trackNumber)-\(subIndex): \(error.localizedDescription)", to: &stderr)
+            }
+        }
+
+        let (subtitleText, subtitleLines) = await recognizer(subImage)
+        let correctedText: String
+        if language.contains("en"), !disableICorrection {
+            let pattern = #"\bl\b"# // Replace l with I when it's a single character
+            correctedText = subtitleText.replacingOccurrences(of: pattern, with: "I", options: .regularExpression)
+        } else {
+            correctedText = subtitleText
+        }
+
+        let jsonOut = SubtitleJSONResult(index: subIndex, lines: subtitleLines, text: correctedText)
+
+        await accumulator.append(taskInput.makeSubtitle(text: correctedText), jsonOut)
     }
 
     private func shouldSkip(_ taskInput: OCRSubtitleTaskInput) -> Bool {
@@ -124,38 +129,48 @@ struct SubtitleProcessor {
         return imageSource.width == 0 || imageSource.height == 0
     }
 
-    private func recognizeText(from image: CGImage,
-                               textRecognitionSemaphore: AsyncSemaphore) async -> (String, [SubtitleLine]) {
-        var text = ""
-        var lines: [SubtitleLine] = []
-
+    /// Builds the text recognizer shared by every subtitle in the track.
+    ///
+    /// Vision builds its recognition engine while performing a request, so creating a request per image
+    /// makes it build a fresh engine per image. Those constructions are not thread safe and corrupt each
+    /// other when they overlap, so a single request is reused for the whole track instead.
+    private func makeTextRecognizer() -> TextRecognizer {
         if !forceOldAPI, #available(macOS 15.0, *) {
-            await textRecognitionSemaphore.wait()
-            let observations: [RecognizedTextObservation]?
-            do {
-                let request = createRecognizeTextRequest()
-                observations = try await request.perform(on: image) as [RecognizedTextObservation]
-            } catch {
-                observations = nil
+            let request = createRecognizeTextRequest()
+            return { image in
+                let observations = try? await request.perform(on: image) as [RecognizedTextObservation]
+                var text = ""
+                var lines: [SubtitleLine] = []
+                let size = CGSize(width: image.width, height: image.height)
+                processRecognizedText(observations, &text, &lines, size)
+                return (text, lines)
             }
-            await textRecognitionSemaphore.signal()
-            let size = CGSize(width: image.width, height: image.height)
-            processRecognizedText(observations, &text, &lines, size)
-        } else {
-            let request = VNRecognizeTextRequest()
-            request.recognitionLevel = getOCRMode()
-            request.usesLanguageCorrection = !disableLanguageCorrection
-            request.revision = VNRecognizeTextRequestRevision3
-            request.recognitionLanguages = language.split(separator: ",").map { String($0) }
-            if let customWords {
-                request.customWords = customWords
-            }
-
-            try? VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
-            processRecognizedText(request.results, &text, &lines, image.width, image.height)
         }
 
-        return (text, lines)
+        let queue = DispatchQueue(label: "com.ecdye.macSubtitleOCR.textRecognition", attributes: .concurrent)
+        return { image in
+            await withCheckedContinuation { continuation in
+                // `VNImageRequestHandler.perform` blocks its caller until Vision is done. Running it on a
+                // Swift concurrency executor would tie up one of the cooperative pool's fixed number of
+                // threads, and enough concurrent requests deadlock the pool, so it runs on its own queue.
+                queue.async {
+                    let request = VNRecognizeTextRequest()
+                    request.recognitionLevel = getOCRMode()
+                    request.usesLanguageCorrection = !disableLanguageCorrection
+                    request.revision = VNRecognizeTextRequestRevision3
+                    request.recognitionLanguages = language.split(separator: ",").map { String($0) }
+                    if let customWords {
+                        request.customWords = customWords
+                    }
+
+                    try? VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
+                    var text = ""
+                    var lines: [SubtitleLine] = []
+                    processRecognizedText(request.results, &text, &lines, image.width, image.height)
+                    continuation.resume(returning: (text, lines))
+                }
+            }
+        }
     }
 
     @available(macOS 15.0, *)
