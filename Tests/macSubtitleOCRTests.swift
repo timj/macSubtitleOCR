@@ -21,7 +21,7 @@ let options = ["--json"]
 #if FFMPEG
 @Test(.serialized, arguments: TestFilePaths.allCases.map(\.path))
 func ffmpegDecoder(path: String) async throws {
-    let outputPath = URL.temporaryDirectory.path
+    let outputPath = try makeOutputDirectory()
     let options = [path, outputPath, "--ffmpeg-decoder"] + options
     try await runTest(with: options)
 }
@@ -29,9 +29,18 @@ func ffmpegDecoder(path: String) async throws {
 
 @Test(.serialized, arguments: TestFilePaths.allCases.map(\.path))
 func internalDecoder(path: String) async throws {
-    let outputPath = URL.temporaryDirectory.path
+    let outputPath = try makeOutputDirectory()
     let options = [path, outputPath] + options
     try await runTest(with: options)
+}
+
+/// Each case needs its own directory: track numbers come from the input, so `sintel.mks` writes
+/// track_1 and track_2 while the other inputs write track_0. Sharing one directory lets a case
+/// assert against output another case left behind.
+private func makeOutputDirectory() throws -> String {
+    let url = URL.temporaryDirectory.appendingPathComponent("macSubtitleOCRTests-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    return url.path
 }
 
 private func runTest(with options: [String]) async throws {
@@ -41,11 +50,16 @@ private func runTest(with options: [String]) async throws {
     var runner = try macSubtitleOCR.parse(options)
     await runner.run()
 
-    try compareOutputs(with: outputPath, track: 0)
+    let tracks = try FileManager.default.contentsOfDirectory(atPath: outputPath)
+        .compactMap { name -> Int? in
+            guard name.hasPrefix("track_"), name.hasSuffix(".srt") else { return nil }
+            return Int(name.dropFirst("track_".count).dropLast(".srt".count))
+        }
+        .sorted()
 
-    // Compare output for track 1 if it's an MKV file
-    if options[0].contains(".mks") {
-        try compareOutputs(with: outputPath, track: 1)
+    #expect(!tracks.isEmpty)
+    for track in tracks {
+        try compareOutputs(with: outputPath, track: track)
     }
 }
 
@@ -110,5 +124,58 @@ private func pgsSegment(type: UInt8, payload: [UInt8]) -> [UInt8] {
         Issue.record("Expected the oversized object to be rejected")
     } catch macSubtitleOCRError.invalidODSDimensions {
         // Expected: rejected on its dimensions, before anything is decoded for it.
+    }
+}
+
+/// A decoded subtitle frame paired with the text it should OCR to.
+private struct OCRSample: Decodable {
+    let source: String
+    let width: Int
+    let height: Int
+    let numberOfColors: Int
+    let palette: Data
+    let indices: Data
+    let text: String
+}
+
+private struct OCRSamples: Decodable {
+    let frames: [OCRSample]
+}
+
+/// Guards OCR accuracy on frames whose glyphs are anti-aliased and outlined.
+///
+/// The whole-file comparison in `compareOutputs` is dominated by timestamps, so it barely moves when
+/// recognition degrades. These frames are compared as text alone, and they cover both a four color
+/// VobSub palette and a 256 color PGS one, since the two degrade differently.
+///
+/// Each frame is a row of unrelated words, so the expected text is the word order the fixture was
+/// built with rather than anything a decoder could infer.
+@Test func recognizesAntiAliasedFrames() async throws {
+    let url = Bundle.module.url(forResource: "ocr-samples.json", withExtension: nil)!
+    let samples = try JSONDecoder().decode(OCRSamples.self, from: Data(contentsOf: url)).frames
+    #expect(!samples.isEmpty)
+
+    let subtitles = samples.enumerated().map { offset, sample in
+        Subtitle(index: offset + 1,
+                 startTimestamp: TimeInterval(offset),
+                 endTimestamp: TimeInterval(offset) + 1,
+                 imageWidth: sample.width,
+                 imageHeight: sample.height,
+                 imageData: sample.indices,
+                 imagePalette: [UInt8](sample.palette),
+                 numberOfColors: sample.numberOfColors)
+    }
+
+    // One at a time: Vision crashes when it builds recognition engines concurrently.
+    let processor = SubtitleProcessor(for: subtitles, from: 0, withOptions: false, false, "en",
+                                      nil, false, false, false, false, try makeOutputDirectory(), 1)
+    let recognized = try await processor.process().srt.reduce(into: [Int: String]()) { result, subtitle in
+        result[subtitle.index] = subtitle.text ?? ""
+    }
+
+    for (offset, sample) in samples.enumerated() {
+        let actual = recognized[offset + 1] ?? ""
+        let score = similarityPercentage(of: sample.text, and: actual)
+        #expect(score >= 90.0, "\(sample.source): expected \(sample.text), read \(actual) (\(score)%)")
     }
 }
