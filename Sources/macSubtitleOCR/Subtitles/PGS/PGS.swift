@@ -70,6 +70,13 @@ struct PGS {
             // End of stream check
             guard segmentType != 0x80, segmentLength != 0 else { return nil }
 
+            guard offset + segmentLength <= buffer.count else {
+                print("Segment of length \(segmentLength) extends past the end of the stream, " +
+                    "abandoning remaining segments!", to: &stderr)
+                offset = buffer.count
+                return nil
+            }
+
             // Parse the segment based on the type (0x14 for PCS, 0x15 for WDS, 0x16 for PDS, 0x17 for ODS)
             switch segmentType {
             case 0x14:
@@ -83,6 +90,9 @@ struct PGS {
                 }
             case 0x15:
                 do {
+                    guard segmentLength > 11 else {
+                        throw macSubtitleOCRError.invalidODSDataLength(length: segmentLength)
+                    }
                     if buffer[offset + 3] == 0x80 {
                         ods = try ODS(buffer, offset, segmentLength)
                         offset += segmentLength
@@ -122,8 +132,12 @@ struct PGS {
         }
     }
 
-    private func getSegmentTimestamp(from pointer: UnsafeRawBufferPointer, offset: Int) -> TimeInterval {
-        TimeInterval(pointer.loadUnaligned(fromByteOffset: offset + 2, as: UInt32.self).bigEndian) / 90000
+    /// Reads the presentation timestamp from the segment header at `offset`, or nil if the header is
+    /// not fully present. A missing end timestamp is filled in from the following subtitle when the SRT
+    /// is written.
+    private func getSegmentTimestamp(from pointer: UnsafeRawBufferPointer, offset: Int) -> TimeInterval? {
+        guard offset >= 0, offset + 6 <= pointer.count else { return nil }
+        return TimeInterval(pointer.loadUnaligned(fromByteOffset: offset + 2, as: UInt32.self).bigEndian) / 90000
     }
 
     private func getSegmentLength(from pointer: UnsafeRawBufferPointer, offset: Int) -> Int {

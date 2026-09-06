@@ -18,7 +18,7 @@ struct PDS {
 
     init(_ buffer: UnsafeRawBufferPointer, _ offset: Int, _ segmentLength: Int) throws {
         let count = buffer.count - offset
-        guard count >= 7, (segmentLength - 2) % 5 == 0 else {
+        guard count >= 7, segmentLength <= count, (segmentLength - 2) % 5 == 0 else {
             throw macSubtitleOCRError.invalidPDSDataLength(length: count)
         }
         parsePDS(buffer, offset, segmentLength)

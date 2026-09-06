@@ -43,12 +43,24 @@ struct RLEData {
             var run = 1
 
             if color == 0x00 {
-                let flags = iterator.next()!
+                guard let flags = iterator.next() else {
+                    throw macSubtitleOCRError.invalidRLE("Ran out of RLE data reading a run-length flag.")
+                }
                 run = Int(flags & 0x3F)
                 if flags & 0x40 != 0 {
-                    run = (run << 8) + Int(iterator.next()!)
+                    guard let extendedRun = iterator.next() else {
+                        throw macSubtitleOCRError.invalidRLE("Ran out of RLE data reading an extended run length.")
+                    }
+                    run = (run << 8) + Int(extendedRun)
                 }
-                color = (flags & 0x80) != 0 ? iterator.next()! : 0
+                if flags & 0x80 != 0 {
+                    guard let runColor = iterator.next() else {
+                        throw macSubtitleOCRError.invalidRLE("Ran out of RLE data reading a run color.")
+                    }
+                    color = runColor
+                } else {
+                    color = 0
+                }
             }
 
             // Ensure run is valid and doesn't exceed pixel buffer

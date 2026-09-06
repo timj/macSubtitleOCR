@@ -61,3 +61,25 @@ private func compareOutputs(with outputPath: String, track: Int) throws {
     #expect(srtMatch >= 85.0) // Lower threshold due to timestamp differences
     #expect(jsonMatch >= 95.0)
 }
+
+/// A PGS stream that ends mid-segment must be rejected or parsed, never read past the end of the buffer.
+@Test func truncatedPGSStreamIsRejectedNotTrapped() throws {
+    let data = try Data(contentsOf: URL(fileURLWithPath: TestFilePaths.sup.path))
+    var parsedAnySubtitles = false
+
+    for length in stride(from: 16, to: data.count, by: 4003) {
+        let truncated = data.prefix(length)
+        do {
+            let pgs = try truncated.withUnsafeBytes { try PGS($0) }
+            parsedAnySubtitles = parsedAnySubtitles || !pgs.subtitles.isEmpty
+            for subtitle in pgs.subtitles {
+                _ = subtitle.makeImageSource()
+            }
+        } catch is macSubtitleOCRError {
+            // Reporting malformed input is fine; trapping on it is not.
+        }
+    }
+
+    // Guard against the parser passing this test by rejecting everything.
+    #expect(parsedAnySubtitles)
+}
