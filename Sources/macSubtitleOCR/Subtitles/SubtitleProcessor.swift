@@ -127,19 +127,25 @@ struct SubtitleProcessor {
     /// ranked candidate is usually the same words spelled in the expected script, so ask for a few.
     private var candidatesToConsider: Int { expectsLatinScript ? 5 : 1 }
 
-    /// Chooses the candidate to keep, along with the text to record for it.
+    /// Chooses the candidate to keep, along with the text to record for it and the readings not taken.
     ///
     /// If the best candidate is wrong only in being spelled with characters drawn as Latin ones, it is
     /// repaired in place; the reading was right and the alternatives are worse. If a foreign letter
     /// survives that, the glyph was genuinely misread rather than substituted, and the ranking among
     /// candidates already in the right script is more trustworthy than repairing a worse one.
-    private func bestCandidate<T>(among candidates: [(T, String)]) -> (T, String)? {
-        guard expectsLatinScript, let top = candidates.first else { return candidates.first }
-        let repaired = LatinConfusables.normalize(top.1)
-        if !containsForeignLetters(repaired) {
-            return (top.0, repaired)
+    private func bestCandidate<T>(among candidates: [(T, String)]) -> (candidate: T, text: String,
+                                                                       alternates: [String])? {
+        guard let first = candidates.first else { return nil }
+        guard expectsLatinScript else {
+            return (first.0, first.1, candidates.dropFirst().map(\.1))
         }
-        return candidates.first { !containsForeignLetters($0.1) } ?? top
+
+        let repaired = candidates.map { ($0.0, LatinConfusables.normalize($0.1)) }
+        let chosen = !containsForeignLetters(repaired[0].1)
+            ? repaired[0]
+            : repaired.first { !containsForeignLetters($0.1) } ?? repaired[0]
+        let alternates = repaired.map(\.1).filter { $0 != chosen.1 }
+        return (chosen.0, chosen.1, alternates)
     }
 
     private func shouldSkip(_ taskInput: OCRSubtitleTaskInput) -> Bool {
@@ -233,7 +239,7 @@ struct SubtitleProcessor {
                                        _ lines: inout [SubtitleLine], _ size: CGSize) {
         text = result?.compactMap { observation in
             let candidates = observation.topCandidates(candidatesToConsider)
-            guard let (candidate, string) = bestCandidate(among: candidates.map { ($0, $0.string) })
+            guard let (candidate, string, alternates) = bestCandidate(among: candidates.map { ($0, $0.string) })
             else { return "" }
             let confidence = candidate.confidence
             let stringRange = string.startIndex ..< string.endIndex
@@ -245,7 +251,8 @@ struct SubtitleProcessor {
                 x: max(0, Int(rect.minX)),
                 width: Int(rect.size.width),
                 y: max(0, Int(size.height - rect.minY - rect.size.height)),
-                height: Int(rect.size.height))
+                height: Int(rect.size.height),
+                alternates: alternates)
             lines.append(line)
 
             return string
@@ -256,7 +263,7 @@ struct SubtitleProcessor {
                                        _ lines: inout [SubtitleLine], _ width: Int, _ height: Int) {
         text = observations?.compactMap { observation in
             let candidates = observation.topCandidates(candidatesToConsider)
-            guard let (candidate, string) = bestCandidate(among: candidates.map { ($0, $0.string) })
+            guard let (candidate, string, alternates) = bestCandidate(among: candidates.map { ($0, $0.string) })
             else { return "" }
             let confidence = candidate.confidence
             let stringRange = string.startIndex ..< string.endIndex
@@ -269,7 +276,8 @@ struct SubtitleProcessor {
                 x: max(0, Int(rect.minX)),
                 width: Int(rect.size.width),
                 y: max(0, Int(CGFloat(height) - rect.minY - rect.size.height)),
-                height: Int(rect.size.height))
+                height: Int(rect.size.height),
+                alternates: alternates)
             lines.append(line)
 
             return string

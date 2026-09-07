@@ -43,6 +43,27 @@ private func makeOutputDirectory() throws -> String {
     return url.path
 }
 
+/// Reads a JSON result with the per-line alternates dropped.
+///
+/// Which readings the recognizer offers below its best one, and in what order, changes between
+/// releases of the framework far more readily than the reading it settles on, so they cannot be held
+/// against a checked in reference. `alternatesAreOfferedPerLine` covers them instead.
+private func withoutAlternates(atPath path: String) throws -> String {
+    let data = try Data(contentsOf: URL(fileURLWithPath: path))
+    guard var images = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+        return ""
+    }
+    for index in images.indices {
+        if let lines = images[index]["lines"] as? [[String: Any]] {
+            images[index]["lines"] = lines.map { line in
+                line.filter { $0.key != "alternates" }
+            }
+        }
+    }
+    let stripped = try JSONSerialization.data(withJSONObject: images, options: [.prettyPrinted, .sortedKeys])
+    return String(data: stripped, encoding: .utf8) ?? ""
+}
+
 private func runTest(with options: [String]) async throws {
     let outputPath = options[1]
 
@@ -67,7 +88,7 @@ private func compareOutputs(with outputPath: String, track: Int) throws {
     let srtExpectedOutput = try String(contentsOfFile: goodSRTPath, encoding: .utf8)
     let jsonExpectedOutput = try String(contentsOfFile: goodJSONPath, encoding: .utf8)
     let srtActualOutput = try String(contentsOfFile: "\(outputPath)/track_\(track).srt", encoding: .utf8)
-    let jsonActualOutput = try String(contentsOfFile: "\(outputPath)/track_\(track).json", encoding: .utf8)
+    let jsonActualOutput = try withoutAlternates(atPath: "\(outputPath)/track_\(track).json")
 
     let srtMatch = similarityPercentage(of: srtExpectedOutput, and: srtActualOutput)
     let jsonMatch = similarityPercentage(of: jsonExpectedOutput, and: jsonActualOutput)
@@ -192,4 +213,27 @@ private struct OCRSamples: Decodable {
     // Text already in the Latin script is returned untouched, accents and all.
     #expect(LatinConfusables.normalize("Eureka") == "Eureka")
     #expect(LatinConfusables.normalize("café") == "café")
+}
+
+/// Every recognized line carries the other readings the recognizer offered, and none repeats the
+/// reading that was chosen.
+@Test func alternatesAreOfferedPerLine() async throws {
+    let outputPath = try makeOutputDirectory()
+    var runner = try macSubtitleOCR.parse([TestFilePaths.sup.path, outputPath, "--json", "--max-threads", "2"])
+    await runner.run()
+
+    let data = try Data(contentsOf: URL(fileURLWithPath: "\(outputPath)/track_0.json"))
+    let images = try #require(try JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+    let lines = images.compactMap { $0["lines"] as? [[String: Any]] }.flatMap(\.self)
+    #expect(!lines.isEmpty)
+
+    var linesWithAlternates = 0
+    for line in lines {
+        let text = try #require(line["text"] as? String)
+        let alternates = try #require(line["alternates"] as? [String])
+        #expect(!alternates.contains(text))
+        #expect(Set(alternates).count == alternates.count)
+        if !alternates.isEmpty { linesWithAlternates += 1 }
+    }
+    #expect(linesWithAlternates > 0)
 }
