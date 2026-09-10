@@ -13,16 +13,24 @@ import Vision
 
 private typealias TextRecognizer = @Sendable (CGImage) async -> (String, [SubtitleLine])
 
-/// A copy of `image` at twice the size, or nil if it cannot be drawn.
+/// A copy of `image` at twice the size, sitting on a white margin, or nil if it cannot be drawn.
+///
+/// The margin is there for a stroke that runs to the edge of the frame. Subtitle frames are cropped
+/// to their visible pixels, so a glyph can end up flush against the border with nowhere for the
+/// recognizer's box to extend, and it reads the line without that glyph: an image of "I can't." comes
+/// back as "can't." Any margin of a few pixels restores it.
 private func enlarged(_ image: CGImage) -> CGImage? {
-    let width = image.width * 2
-    let height = image.height * 2
+    let margin = 4
+    let width = image.width * 2 + margin * 2
+    let height = image.height * 2 + margin * 2
     let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
                             space: CGColorSpaceCreateDeviceRGB(),
                             bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
     guard let context else { return nil }
+    context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+    context.fill(CGRect(x: 0, y: 0, width: width, height: height))
     context.interpolationQuality = .high
-    context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+    context.draw(image, in: CGRect(x: margin, y: margin, width: image.width * 2, height: image.height * 2))
     return context.makeImage()
 }
 
