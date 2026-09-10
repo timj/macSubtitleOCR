@@ -174,7 +174,7 @@ private struct OCRSamples: Decodable {
 /// Each frame is a row of unrelated words, so the expected text is the word order the fixture was
 /// built with rather than anything a decoder could infer.
 @Test func recognizesAntiAliasedFrames() async throws {
-    let url = Bundle.module.url(forResource: "ocr-samples.json", withExtension: nil)!
+    let url = try #require(Bundle.module.url(forResource: "ocr-samples.json", withExtension: nil))
     let samples = try JSONDecoder().decode(OCRSamples.self, from: Data(contentsOf: url)).frames
     #expect(!samples.isEmpty)
 
@@ -190,8 +190,8 @@ private struct OCRSamples: Decodable {
     }
 
     // One at a time: Vision crashes when it builds recognition engines concurrently.
-    let processor = SubtitleProcessor(for: subtitles, from: 0, withOptions: false, false, "en",
-                                      nil, false, false, false, false, try makeOutputDirectory(), 1)
+    let processor = try SubtitleProcessor(for: subtitles, from: 0, withOptions: false, false, "en",
+                                          nil, false, false, false, false, makeOutputDirectory(), 1)
     let recognized = try await processor.process().srt.reduce(into: [Int: String]()) { result, subtitle in
         result[subtitle.index] = subtitle.text ?? ""
     }
@@ -235,7 +235,9 @@ private struct OCRSamples: Decodable {
         let alternates = try #require(line["alternates"] as? [String])
         #expect(!alternates.contains(text))
         #expect(Set(alternates).count == alternates.count)
-        if !alternates.isEmpty { linesWithAlternates += 1 }
+        if !alternates.isEmpty {
+            linesWithAlternates += 1
+        }
     }
     #expect(linesWithAlternates > 0)
 }
@@ -288,8 +290,8 @@ private func renderedSubtitle(_ text: String, index: Int, pointSize: CGFloat = 4
 /// one is invisible to anyone not scanning the file for blanks.
 @Test func textRejectedByLanguageCorrectionIsStillRead() async throws {
     let subtitle = try renderedSubtitle("APXGP", index: 1)
-    let processor = SubtitleProcessor(for: [subtitle], from: 0, withOptions: false, false, "en",
-                                      nil, false, false, false, false, try makeOutputDirectory(), 1)
+    let processor = try SubtitleProcessor(for: [subtitle], from: 0, withOptions: false, false, "en",
+                                          nil, false, false, false, false, makeOutputDirectory(), 1)
     let recognized = try await processor.process().srt.first?.text ?? ""
     #expect(recognized == "APXGP")
 }
@@ -299,8 +301,8 @@ private func renderedSubtitle(_ text: String, index: Int, pointSize: CGFloat = 4
 /// "Yes." answering a question, is small enough to land there.
 @Test func frameTooSmallToRecognizeIsEnlarged() async throws {
     let subtitle = try renderedSubtitle("Wait", index: 1, pointSize: 7)
-    let processor = SubtitleProcessor(for: [subtitle], from: 0, withOptions: false, false, "en",
-                                      nil, false, false, false, false, try makeOutputDirectory(), 1)
+    let processor = try SubtitleProcessor(for: [subtitle], from: 0, withOptions: false, false, "en",
+                                          nil, false, false, false, false, makeOutputDirectory(), 1)
     let recognized = try await processor.process().srt.first?.text ?? ""
     #expect(recognized == "Wait")
 }

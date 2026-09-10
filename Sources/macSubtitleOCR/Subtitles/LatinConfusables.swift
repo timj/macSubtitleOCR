@@ -216,7 +216,7 @@ enum LatinConfusables {
         "\u{FF56}": "v", // Fullwidth Latin Small Letter V
         "\u{FF58}": "x", // Fullwidth Latin Small Letter X
         "\u{FF59}": "y", // Fullwidth Latin Small Letter Y
-        "\u{102F5}": "Z", // Coptic Epact Number Three Hundred
+        "\u{102F5}": "Z" // Coptic Epact Number Three Hundred
     ]
 
     /// Replaces characters from other scripts with the Latin ones they are drawn as.

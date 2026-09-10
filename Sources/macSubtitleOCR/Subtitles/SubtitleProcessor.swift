@@ -165,7 +165,9 @@ struct SubtitleProcessor {
     /// Vision's recognizer draws on a multilingual character inventory whatever `recognitionLanguages`
     /// asks for, so an English only track comes back with the odd Cyrillic or Greek letter. A lower
     /// ranked candidate is usually the same words spelled in the expected script, so ask for a few.
-    private var candidatesToConsider: Int { expectsLatinScript ? 5 : 1 }
+    private var candidatesToConsider: Int {
+        expectsLatinScript ? 5 : 1
+    }
 
     /// Chooses the candidate to keep, along with the text to record for it and the readings not taken.
     ///
@@ -221,7 +223,7 @@ struct SubtitleProcessor {
                     return observations
                 }
                 guard let uncorrected else { return [] }
-                return (try? await uncorrected.perform(on: image)) ?? []
+                return await (try? uncorrected.perform(on: image)) ?? []
             }
 
             return { image in
@@ -250,7 +252,9 @@ struct SubtitleProcessor {
                         let request = createLegacyRecognizeTextRequest(
                             usingLanguageCorrection: !disableLanguageCorrection)
                         try? VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
-                        if let results = request.results, !results.isEmpty { return results }
+                        if let results = request.results, !results.isEmpty {
+                            return results
+                        }
                         guard !disableLanguageCorrection else { return [] }
                         let uncorrected = createLegacyRecognizeTextRequest(usingLanguageCorrection: false)
                         try? VNImageRequestHandler(cgImage: image, options: [:]).perform([uncorrected])
