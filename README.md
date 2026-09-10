@@ -73,6 +73,11 @@ In tests comparing Vision's output with [Tesseract](https://github.com/tesseract
 
 While some tools, like [SubtitleEdit](https://github.com/SubtitleEdit/subtitleedit), may use binary image compare for marginally better accuracy, Vision offers more flexibility with built-in language support.
 
+> [!NOTE]
+> A `--save-images` PNG holds the same pixels the run recognized, but it does not always recognize the same.
+> The file records the image as having straight alpha where the run described it as premultiplied, and Vision answers differently for the two even though they resolve to identical pixels.
+> A saved image is therefore reliable for seeing what was extracted, and not for deciding what Vision should have read from it.
+
 ## Contribution and TODO
 
 For information on how to contribute to the project, please refer to [CONTRIBUTING.md](CONTRIBUTING.md).
