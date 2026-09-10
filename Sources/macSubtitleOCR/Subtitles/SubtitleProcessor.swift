@@ -84,7 +84,26 @@ struct SubtitleProcessor {
             }
         }
 
-        return await macSubtitleOCRResult(trackNumber: trackNumber, srt: accumulator.subtitles, json: accumulator.json)
+        let recognized = await accumulator.subtitles
+        reportSubtitlesWithoutText(in: recognized)
+
+        return await macSubtitleOCRResult(trackNumber: trackNumber, srt: recognized, json: accumulator.json)
+    }
+
+    /// Names every subtitle that came back with no text at all.
+    ///
+    /// A cue carrying correct timing and an empty body reads as valid output, so losing one is only
+    /// visible to someone scanning the file for blanks. Saying which cues they are makes the loss
+    /// something the run reports rather than something the output hides.
+    private func reportSubtitlesWithoutText(in subtitles: [Subtitle]) {
+        let blank = subtitles.filter { $0.text?.isEmpty ?? true }.sorted { $0.index < $1.index }
+        guard !blank.isEmpty else { return }
+
+        for subtitle in blank {
+            let at = subtitle.startTimestamp?.srtTimestamp ?? "an unknown time"
+            print("No text recognized for track \(trackNumber), subtitle \(subtitle.index) at \(at)", to: &stderr)
+        }
+        print("Track \(trackNumber): \(blank.count) of \(subtitles.count) subtitles produced no text", to: &stderr)
     }
 
     private func recognize(_ taskInput: OCRSubtitleTaskInput, into accumulator: SubtitleAccumulator,
@@ -160,11 +179,21 @@ struct SubtitleProcessor {
     /// Vision builds its recognition engine while performing a request, so creating a request per image
     /// makes it build a fresh engine per image. Those constructions are not thread safe and corrupt each
     /// other when they overlap, so a single request is reused for the whole track instead.
+    ///
+    /// Language correction can discard an observation outright rather than return a reading its language
+    /// model cannot account for, so a short line offering it no context to work with, a subtitle holding
+    /// nothing but a team name for instance, comes back with no observations at all. Reading the image
+    /// again with correction switched off recovers the text the detector already had, so an image that
+    /// produced nothing is retried that way before it is written off as blank.
     private func makeTextRecognizer() -> TextRecognizer {
         if !forceOldAPI, #available(macOS 15.0, *) {
-            let request = createRecognizeTextRequest()
+            let request = createRecognizeTextRequest(usingLanguageCorrection: !disableLanguageCorrection)
+            let retry = disableLanguageCorrection ? nil : createRecognizeTextRequest(usingLanguageCorrection: false)
             return { image in
-                let observations = try? await request.perform(on: image) as [RecognizedTextObservation]
+                var observations = try? await request.perform(on: image) as [RecognizedTextObservation]
+                if observations?.isEmpty ?? true, let retry {
+                    observations = try? await retry.perform(on: image) as [RecognizedTextObservation]
+                }
                 var text = ""
                 var lines: [SubtitleLine] = []
                 let size = CGSize(width: image.width, height: image.height)
@@ -180,19 +209,18 @@ struct SubtitleProcessor {
                 // Swift concurrency executor would tie up one of the cooperative pool's fixed number of
                 // threads, and enough concurrent requests deadlock the pool, so it runs on its own queue.
                 queue.async {
-                    let request = VNRecognizeTextRequest()
-                    request.recognitionLevel = getOCRMode()
-                    request.usesLanguageCorrection = !disableLanguageCorrection
-                    request.revision = VNRecognizeTextRequestRevision3
-                    request.recognitionLanguages = language.split(separator: ",").map { String($0) }
-                    if let customWords {
-                        request.customWords = customWords
-                    }
-
+                    let request = createLegacyRecognizeTextRequest(
+                        usingLanguageCorrection: !disableLanguageCorrection)
                     try? VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
+                    var results = request.results
+                    if results?.isEmpty ?? true, !disableLanguageCorrection {
+                        let retry = createLegacyRecognizeTextRequest(usingLanguageCorrection: false)
+                        try? VNImageRequestHandler(cgImage: image, options: [:]).perform([retry])
+                        results = retry.results
+                    }
                     var text = ""
                     var lines: [SubtitleLine] = []
-                    processRecognizedText(request.results, &text, &lines, image.width, image.height)
+                    processRecognizedText(results, &text, &lines, image.width, image.height)
                     continuation.resume(returning: (text, lines))
                 }
             }
@@ -223,11 +251,23 @@ struct SubtitleProcessor {
     }
 
     @available(macOS 15.0, *)
-    private func createRecognizeTextRequest() -> RecognizeTextRequest {
+    private func createRecognizeTextRequest(usingLanguageCorrection: Bool) -> RecognizeTextRequest {
         var request = RecognizeTextRequest()
         request.recognitionLevel = getOCRMode()
-        request.usesLanguageCorrection = !disableLanguageCorrection
+        request.usesLanguageCorrection = usingLanguageCorrection
         request.recognitionLanguages = language.split(separator: ",").map { Locale.Language(identifier: String($0)) }
+        if let customWords {
+            request.customWords = customWords
+        }
+        return request
+    }
+
+    private func createLegacyRecognizeTextRequest(usingLanguageCorrection: Bool) -> VNRecognizeTextRequest {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = getOCRMode()
+        request.usesLanguageCorrection = usingLanguageCorrection
+        request.revision = VNRecognizeTextRequestRevision3
+        request.recognitionLanguages = language.split(separator: ",").map { String($0) }
         if let customWords {
             request.customWords = customWords
         }

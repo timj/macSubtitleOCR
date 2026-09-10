@@ -6,6 +6,8 @@
 // Copyright © 2024-2026 Ethan Dye. All rights reserved.
 //
 
+import CoreGraphics
+import CoreText
 import Foundation
 @testable import macSubtitleOCR
 import Testing
@@ -236,4 +238,58 @@ private struct OCRSamples: Decodable {
         if !alternates.isEmpty { linesWithAlternates += 1 }
     }
     #expect(linesWithAlternates > 0)
+}
+
+/// Draws `text` as a subtitle frame: white glyphs on a black ground, stored the way a decoder hands
+/// one over, as a grayscale palette with the drawn pixels as indices into it.
+///
+/// The frames in `ocr-samples.json` are real subtitle glyphs because rendered ones are too clean to
+/// stand in for anti-aliasing, but what is being provoked here is a decision the recognizer's language
+/// model makes about the words, not about the shapes, so drawing the text is enough.
+private func renderedSubtitle(_ text: String, index: Int) throws -> Subtitle {
+    let font = CTFontCreateWithName("Helvetica" as CFString, 40, nil)
+    let attributes: [NSAttributedString.Key: Any] = [
+        NSAttributedString.Key(kCTFontAttributeName as String): font,
+        NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(gray: 1, alpha: 1)
+    ]
+    let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attributes))
+    let bounds = CTLineGetBoundsWithOptions(line, [])
+    let width = Int(bounds.width.rounded(.up)) + 8
+    let height = Int(bounds.height.rounded(.up)) + 8
+
+    let context = try #require(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                                         bytesPerRow: width, space: CGColorSpaceCreateDeviceGray(),
+                                         bitmapInfo: CGImageAlphaInfo.none.rawValue))
+    context.setFillColor(CGColor(gray: 0, alpha: 1))
+    context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+    context.textPosition = CGPoint(x: 4, y: 4 - bounds.minY)
+    CTLineDraw(line, context)
+
+    let pixels = try #require(context.data)
+    // A gray level doubles as its own palette index, and every pixel is opaque.
+    let palette: [UInt8] = (0 ..< 256).flatMap { level -> [UInt8] in
+        let gray = UInt8(level)
+        return [gray, gray, gray, 255]
+    }
+
+    return Subtitle(index: index,
+                    startTimestamp: 0,
+                    endTimestamp: 1,
+                    imageWidth: width,
+                    imageHeight: height,
+                    imageData: Data(bytes: pixels, count: width * height),
+                    imagePalette: palette,
+                    numberOfColors: 256)
+}
+
+/// Language correction can discard an observation outright rather than return a reading its language
+/// model cannot account for, which loses a subtitle holding nothing but a proper noun. Such a frame
+/// must still be read: a cue with correct timing and no text at all reads as valid output, so losing
+/// one is invisible to anyone not scanning the file for blanks.
+@Test func textRejectedByLanguageCorrectionIsStillRead() async throws {
+    let subtitle = try renderedSubtitle("APXGP", index: 1)
+    let processor = SubtitleProcessor(for: [subtitle], from: 0, withOptions: false, false, "en",
+                                      nil, false, false, false, false, try makeOutputDirectory(), 1)
+    let recognized = try await processor.process().srt.first?.text ?? ""
+    #expect(recognized == "APXGP")
 }
