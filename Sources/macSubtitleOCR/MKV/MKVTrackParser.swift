@@ -118,7 +118,9 @@ class MKVTrackParser: MKVFileHandler {
             default:
                 fileHandle.seek(toFileOffset: fileHandle.offsetInFile + elementSize)
             }
-            if trackNumber != nil, trackType != nil, codecID != nil { break }
+            if trackNumber != nil, trackType != nil, codecID != nil {
+                break
+            }
         }
 
         if let trackNumber, let codecID {
@@ -137,7 +139,9 @@ class MKVTrackParser: MKVFileHandler {
                     default:
                         fileHandle.seek(toFileOffset: fileHandle.offsetInFile + elementSize)
                     }
-                    if codecPrivate[trackNumber] != nil { break }
+                    if codecPrivate[trackNumber] != nil {
+                        break
+                    }
                 }
             }
             if codecs.contains(codecID) {

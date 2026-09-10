@@ -45,7 +45,9 @@ struct PGS {
             logger.debug("Parsing subtitle at offset: \(offset)")
             guard let subtitle = try parseNextSubtitle(buffer, &offset)
             else {
-                if offset + pgsHeaderLength > buffer.count { break }
+                if offset + pgsHeaderLength > buffer.count {
+                    break
+                }
                 continue
             }
 
@@ -106,7 +108,9 @@ struct PGS {
                     } else if hasMultipleODS {
                         try ods!.appendSegment(buffer, offset, segmentLength)
                         offset += segmentLength
-                        if buffer[offset - 10] != 0x40 { break }
+                        if buffer[offset - 10] != 0x40 {
+                            break
+                        }
                     } else {
                         ods = try ODS(buffer, offset, segmentLength)
                         offset += segmentLength
