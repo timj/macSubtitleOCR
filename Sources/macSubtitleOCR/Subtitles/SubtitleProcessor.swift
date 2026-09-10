@@ -13,6 +13,19 @@ import Vision
 
 private typealias TextRecognizer = @Sendable (CGImage) async -> (String, [SubtitleLine])
 
+/// A copy of `image` at twice the size, or nil if it cannot be drawn.
+private func enlarged(_ image: CGImage) -> CGImage? {
+    let width = image.width * 2
+    let height = image.height * 2
+    let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                            space: CGColorSpaceCreateDeviceRGB(),
+                            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
+    guard let context else { return nil }
+    context.interpolationQuality = .high
+    context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+    return context.makeImage()
+}
+
 private struct OCRSubtitleTaskInput {
     let index: Int
     let startTimestamp: TimeInterval?
@@ -180,22 +193,38 @@ struct SubtitleProcessor {
     /// makes it build a fresh engine per image. Those constructions are not thread safe and corrupt each
     /// other when they overlap, so a single request is reused for the whole track instead.
     ///
+    /// An image that recognizes as nothing at all is read twice more before it is written off as blank,
+    /// because a cue carrying correct timing and no text reads as valid output and hides its own loss.
     /// Language correction can discard an observation outright rather than return a reading its language
-    /// model cannot account for, so a short line offering it no context to work with, a subtitle holding
-    /// nothing but a team name for instance, comes back with no observations at all. Reading the image
-    /// again with correction switched off recovers the text the detector already had, so an image that
-    /// produced nothing is retried that way before it is written off as blank.
+    /// model cannot account for, so a short line offering it no context, a subtitle holding nothing but
+    /// a team name for instance, comes back empty; switching correction off recovers the text the
+    /// detector already had. A small image can also fall under whatever size the recognizer wants,
+    /// which doubling it clears. Both readings are only ever reached from nothing, so neither can cost
+    /// a subtitle a reading it already had.
     private func makeTextRecognizer() -> TextRecognizer {
         if !forceOldAPI, #available(macOS 15.0, *) {
             let request = createRecognizeTextRequest(usingLanguageCorrection: !disableLanguageCorrection)
-            let retry = disableLanguageCorrection ? nil : createRecognizeTextRequest(usingLanguageCorrection: false)
+            let uncorrected = disableLanguageCorrection
+                ? nil
+                : createRecognizeTextRequest(usingLanguageCorrection: false)
+
+            @Sendable func read(_ image: CGImage) async -> [RecognizedTextObservation] {
+                if let observations = try? await request.perform(on: image), !observations.isEmpty {
+                    return observations
+                }
+                guard let uncorrected else { return [] }
+                return (try? await uncorrected.perform(on: image)) ?? []
+            }
+
             return { image in
-                var observations = try? await request.perform(on: image) as [RecognizedTextObservation]
-                if observations?.isEmpty ?? true, let retry {
-                    observations = try? await retry.perform(on: image) as [RecognizedTextObservation]
+                var observations = await read(image)
+                if observations.isEmpty, let enlarged = enlarged(image) {
+                    observations = await read(enlarged)
                 }
                 var text = ""
                 var lines: [SubtitleLine] = []
+                // Bounding boxes arrive normalized, so scaling them by the original image keeps them in
+                // its coordinates whichever copy was read.
                 let size = CGSize(width: image.width, height: image.height)
                 processRecognizedText(observations, &text, &lines, size)
                 return (text, lines)
@@ -209,14 +238,20 @@ struct SubtitleProcessor {
                 // Swift concurrency executor would tie up one of the cooperative pool's fixed number of
                 // threads, and enough concurrent requests deadlock the pool, so it runs on its own queue.
                 queue.async {
-                    let request = createLegacyRecognizeTextRequest(
-                        usingLanguageCorrection: !disableLanguageCorrection)
-                    try? VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
-                    var results = request.results
-                    if results?.isEmpty ?? true, !disableLanguageCorrection {
-                        let retry = createLegacyRecognizeTextRequest(usingLanguageCorrection: false)
-                        try? VNImageRequestHandler(cgImage: image, options: [:]).perform([retry])
-                        results = retry.results
+                    func read(_ image: CGImage) -> [VNRecognizedTextObservation] {
+                        let request = createLegacyRecognizeTextRequest(
+                            usingLanguageCorrection: !disableLanguageCorrection)
+                        try? VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
+                        if let results = request.results, !results.isEmpty { return results }
+                        guard !disableLanguageCorrection else { return [] }
+                        let uncorrected = createLegacyRecognizeTextRequest(usingLanguageCorrection: false)
+                        try? VNImageRequestHandler(cgImage: image, options: [:]).perform([uncorrected])
+                        return uncorrected.results ?? []
+                    }
+
+                    var results = read(image)
+                    if results.isEmpty, let enlarged = enlarged(image) {
+                        results = read(enlarged)
                     }
                     var text = ""
                     var lines: [SubtitleLine] = []

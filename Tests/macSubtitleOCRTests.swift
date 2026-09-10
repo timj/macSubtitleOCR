@@ -244,10 +244,10 @@ private struct OCRSamples: Decodable {
 /// one over, as a grayscale palette with the drawn pixels as indices into it.
 ///
 /// The frames in `ocr-samples.json` are real subtitle glyphs because rendered ones are too clean to
-/// stand in for anti-aliasing, but what is being provoked here is a decision the recognizer's language
-/// model makes about the words, not about the shapes, so drawing the text is enough.
-private func renderedSubtitle(_ text: String, index: Int) throws -> Subtitle {
-    let font = CTFontCreateWithName("Helvetica" as CFString, 40, nil)
+/// stand in for anti-aliasing. What the callers here provoke is a recognizer decision about the words
+/// or about the size of the frame rather than about the shapes, so drawing the text is enough.
+private func renderedSubtitle(_ text: String, index: Int, pointSize: CGFloat = 40) throws -> Subtitle {
+    let font = CTFontCreateWithName("Helvetica" as CFString, pointSize, nil)
     let attributes: [NSAttributedString.Key: Any] = [
         NSAttributedString.Key(kCTFontAttributeName as String): font,
         NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(gray: 1, alpha: 1)
@@ -292,4 +292,15 @@ private func renderedSubtitle(_ text: String, index: Int) throws -> Subtitle {
                                       nil, false, false, false, false, try makeOutputDirectory(), 1)
     let recognized = try await processor.process().srt.first?.text ?? ""
     #expect(recognized == "APXGP")
+}
+
+/// A frame too small for the recognizer produces nothing at the size it arrives at, and enlarging it
+/// is the difference between a reading and a cue with no text. A short line on a DVD subtitle, a lone
+/// "Yes." answering a question, is small enough to land there.
+@Test func frameTooSmallToRecognizeIsEnlarged() async throws {
+    let subtitle = try renderedSubtitle("Wait", index: 1, pointSize: 7)
+    let processor = SubtitleProcessor(for: [subtitle], from: 0, withOptions: false, false, "en",
+                                      nil, false, false, false, false, try makeOutputDirectory(), 1)
+    let recognized = try await processor.process().srt.first?.text ?? ""
+    #expect(recognized == "Wait")
 }
