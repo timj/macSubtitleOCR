@@ -156,6 +156,12 @@ struct SubtitleImageSource {
         }
 
         guard let provider = CGDataProvider(data: rgbaData as CFData) else { return nil }
+        // Subtitle palettes carry straight alpha, so `premultipliedLast` is not what the buffer holds.
+        // It composites to the same pixels regardless: wherever alpha is partial these palettes pin the
+        // color to black or white, and both readings agree at either end. Recognition does not agree,
+        // though. Vision reads the two differently despite the identical pixels, and declaring the
+        // straight alpha it really is reads measurably worse, so the buffer is described this way on
+        // purpose.
         let bitmapInfo = CGBitmapInfo.byteOrder32Big
             .union(CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue))
         let colorSpace = CGColorSpaceCreateDeviceRGB()
